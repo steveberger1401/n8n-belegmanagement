@@ -22,7 +22,7 @@
     },
     {
       "parameters": {
-        "url": "http://PAPERLESS_HOST:8010/api/documents/?tags__id__none=1&page_size=20&ordering=-id",
+        "url": "http://PAPERLESS_HOST:8010/api/documents/?tags__id__none=1,2&page_size=20&ordering=-id",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {}
@@ -88,12 +88,13 @@
       "position": [
         896,
         0
-      ]
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const r = JSON.parse($json.response);\nconst doc = $('Prompt bauen').item.json.doc_id;\nreturn { json: { doc_id: doc, supplier_name: r.supplier_name, bill_no: r.bill_no, bill_date: r.bill_date, net: Number(r.net), total: Number(r.total) } };"
+        "jsCode": "const doc = $('Prompt bauen').item.json.doc_id;\nlet r;\ntry {\n  r = JSON.parse($json.response);\n} catch (e) {\n  return { json: { doc_id: doc, review_reason: 'KI-Auswertung fehlgeschlagen oder kein gültiges JSON' } };\n}\nif (!r || typeof r !== 'object') {\n  return { json: { doc_id: doc, review_reason: 'KI-Antwort ist leer' } };\n}\nconst net = Number(r.net);\nconst total = Number(r.total);\nconst fehler = [];\nif (!r.supplier_name) fehler.push('Lieferant fehlt');\nif (!r.bill_no) fehler.push('Rechnungsnummer fehlt');\nif (!/^\\d{4}-\\d{2}-\\d{2}$/.test(r.bill_date || '')) fehler.push('Datum fehlt oder ist ungültig');\nif (!(net > 0) || !(total >= net)) fehler.push('Beträge unplausibel');\nreturn { json: { doc_id: doc, supplier_name: r.supplier_name, bill_no: r.bill_no, bill_date: r.bill_date, net: net, total: total, review_reason: fehler.join(', ') } };"
       },
       "id": "c982f13c-162d-44a0-a6b4-0bfda6b8081e",
       "name": "Felder lesen",
@@ -202,7 +203,8 @@
           "id": "REPLACE_CREDENTIAL_ID",
           "name": "ERPNext API"
         }
-      }
+      },
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -380,6 +382,122 @@
         2224,
         -128
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9e1c0000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.review_reason }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9e1c0000-0000-4000-8000-000000000002",
+      "name": "Plausibel?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const f = $('Felder lesen').item.json;\nconst grund = f.review_reason || ($json.error ? 'ERPNext-Anlage fehlgeschlagen' : 'Lieferant \"' + f.supplier_name + '\" ist in ERPNext nicht angelegt');\nreturn { json: { doc_id: f.doc_id, reason: grund, noteBody: JSON.stringify({ note: 'Manuelle Prüfung nötig: ' + grund }) } };"
+      },
+      "id": "9e1c0000-0000-4000-8000-000000000003",
+      "name": "Prüfgrund bauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://PAPERLESS_HOST:8010/api/documents/{{ $json.doc_id }}/notes/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.noteBody }}",
+        "options": {}
+      },
+      "id": "9e1c0000-0000-4000-8000-000000000004",
+      "name": "Prüfvermerk in Paperless",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2016,
+        416
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "Paperless API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://PAPERLESS_HOST:8010/api/documents/bulk_edit/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ documents: [$(\"Prüfgrund bauen\").item.json.doc_id], method: \"add_tag\", parameters: { tag: 2 } }) }}",
+        "options": {}
+      },
+      "id": "9e1c0000-0000-4000-8000-000000000005",
+      "name": "Zur Prüfung markieren",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2240,
+        416
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "Paperless API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 7. Fallback und manuelle Prüfung\nWenn die KI kein brauchbares Ergebnis liefert, Pflichtfelder fehlen, der Lieferant unbekannt ist oder ERPNext den Entwurf ablehnt, wird **kein** Entwurf angelegt. Der Beleg bekommt in Paperless einen Vermerk mit dem Grund und das Tag \"Manuelle Prüfung\" (ID 2). Er wird nicht mehr automatisch verarbeitet, bis ein Mensch ihn bearbeitet.",
+        "height": 150,
+        "width": 940,
+        "color": 3
+      },
+      "id": "9e1c0000-0000-4000-8000-000000000006",
+      "name": "Notiz 7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1296,
+        580
+      ]
     }
   ],
   "connections": {
@@ -442,7 +560,7 @@
       "main": [
         [
           {
-            "node": "Lieferant in ERPNext suchen",
+            "node": "Plausibel?",
             "type": "main",
             "index": 0
           }
@@ -465,6 +583,13 @@
         [
           {
             "node": "Rechnung schon da?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prüfgrund bauen",
             "type": "main",
             "index": 0
           }
@@ -516,6 +641,53 @@
         [
           {
             "node": "Beleg als verarbeitet markieren",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prüfgrund bauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plausibel?": {
+      "main": [
+        [
+          {
+            "node": "Lieferant in ERPNext suchen",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prüfgrund bauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prüfgrund bauen": {
+      "main": [
+        [
+          {
+            "node": "Prüfvermerk in Paperless",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prüfvermerk in Paperless": {
+      "main": [
+        [
+          {
+            "node": "Zur Prüfung markieren",
             "type": "main",
             "index": 0
           }
