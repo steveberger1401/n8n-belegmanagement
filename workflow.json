@@ -1,0 +1,531 @@
+{
+  "name": "Belege zu ERPNext-Entwürfen (Demo)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "04b04261-4fe0-433a-86d8-58d84fa459a5",
+      "name": "Alle 5 Minuten",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://PAPERLESS_HOST:8010/api/documents/?tags__id__none=1&page_size=20&ordering=-id",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "6cee5c53-81ff-435d-8cee-36355515c41a",
+      "name": "Unverarbeitete Belege holen",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "Paperless API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "results",
+        "options": {}
+      },
+      "id": "84f5b208-2be5-4465-9146-c57832f0e07f",
+      "name": "Belege einzeln",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const beleg = $json.content || '';\nconst prompt = 'Extrahiere aus dem folgenden Beleg die Felder supplier_name, bill_no, bill_date (YYYY-MM-DD), net, vat, total (Zahlen mit Punkt). Antworte ausschliesslich mit JSON.\\n\\nBeleg:\\n' + beleg;\nreturn { json: { doc_id: $json.id, ollamaBody: JSON.stringify({ model: 'qwen2.5:7b', stream: false, format: 'json', prompt: prompt }) } };"
+      },
+      "id": "a1c281cf-6e81-4265-a844-d38aaa93d5cb",
+      "name": "Prompt bauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://OLLAMA_HOST:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.ollamaBody }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "03c328ab-77ea-45af-96b9-b5a58e4fd702",
+      "name": "Ollama Extraktion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const r = JSON.parse($json.response);\nconst doc = $('Prompt bauen').item.json.doc_id;\nreturn { json: { doc_id: doc, supplier_name: r.supplier_name, bill_no: r.bill_no, bill_date: r.bill_date, net: Number(r.net), total: Number(r.total) } };"
+      },
+      "id": "c982f13c-162d-44a0-a6b4-0bfda6b8081e",
+      "name": "Felder lesen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ \"http://ERPNEXT_HOST:8090/api/resource/Supplier?filters=\" + encodeURIComponent(JSON.stringify([[\"supplier_name\",\"=\",$json.supplier_name]])) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "b0e73994-6fee-443c-811d-f089ddd382b7",
+      "name": "Lieferant in ERPNext suchen",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1344,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "ERPNext API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.data.length }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "rightValue": 0
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "405d51e3-ba2e-4926-84c0-eed9041bc19f",
+      "name": "Lieferant vorhanden?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const f = $('Felder lesen').item.json;\nconst body = { doctype: 'Purchase Invoice', company: 'DEMO_FIRMA', supplier: f.supplier_name, bill_no: f.bill_no, bill_date: f.bill_date, posting_date: f.bill_date, currency: 'EUR', items: [{ item_code: 'DEMO-LEISTUNG', qty: 1, rate: f.net, expense_account: '5130 - Einkauf Roh-, Hilfs- und Betriebsstoffe 19% Vorsteuer - S' }], taxes: [{ charge_type: 'On Net Total', account_head: '1406 - Abziehbare Vorsteuer 19 % - S', rate: 19, description: 'Vorsteuer 19 %' }] };\nreturn { json: { doc_id: f.doc_id, invoiceBody: JSON.stringify(body) } };"
+      },
+      "id": "b320fd42-7859-41cd-8ef2-245b62ee7d31",
+      "name": "Eingangsrechnung bauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ERPNEXT_HOST:8090/api/resource/Purchase%20Invoice",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.invoiceBody }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "id": "ebff91b1-f0ef-4237-9502-fba34de52f30",
+      "name": "ERPNext Entwurf anlegen",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2016,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "ERPNext API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://PAPERLESS_HOST:8010/api/documents/bulk_edit/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ documents: [$(\"Felder lesen\").item.json.doc_id], method: \"add_tag\", parameters: { tag: 1 } }) }}",
+        "options": {}
+      },
+      "id": "d36cf71a-5e43-4df5-9c59-740e6c8296ed",
+      "name": "Beleg als verarbeitet markieren",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "Paperless API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ \"http://ERPNEXT_HOST:8090/api/resource/Purchase%20Invoice?filters=\" + encodeURIComponent(JSON.stringify([[\"supplier\",\"=\",$('Felder lesen').item.json.supplier_name],[\"bill_no\",\"=\",$('Felder lesen').item.json.bill_no],[\"docstatus\",\"<\",2]])) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "0da21ee7-a9ec-4694-bd08-e48482351278",
+      "name": "Rechnung schon da?",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1792,
+        208
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CREDENTIAL_ID",
+          "name": "ERPNext API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.data.length }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "rightValue": 0,
+              "id": "e7ea611a-868f-46b4-aad1-442dec7f53da"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "84342fa1-c7fb-4eee-a5e7-44c89ac8c816",
+      "name": "Schon vorhanden?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2016,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1. Start\nAlle 5 Minuten prüft das System, ob neue Belege im Dokumentenarchiv liegen.",
+        "height": 408,
+        "width": 200,
+        "color": 4
+      },
+      "id": "34da0d46-00f1-433c-b099-a361ca8dd858",
+      "name": "Notiz 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2. Belege holen\nBis zu 20 unbearbeitete Belege aus Paperless holen und einzeln bearbeiten.",
+        "height": 408,
+        "width": 436,
+        "color": 5
+      },
+      "id": "27a4acbe-00a7-460a-bcad-3946239b515f",
+      "name": "Notiz 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        176,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3. KI liest den Beleg\nDie lokale KI (Ollama, Modell qwen2.5) liest Lieferant, Rechnungsnummer, Datum und Beträge. Nichts geht in die Cloud.",
+        "height": 408,
+        "width": 664,
+        "color": 6
+      },
+      "id": "c618b244-efdf-42df-af49-ac18bb471afd",
+      "name": "Notiz 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        624,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4. Prüfung in ERPNext\nIst der Lieferant bekannt? Gibt es die Rechnung schon? Dann wird kein zweiter Entwurf angelegt.",
+        "height": 408,
+        "width": 456,
+        "color": 3
+      },
+      "id": "9171e0f0-6d04-4880-9c76-d31cfd05c702",
+      "name": "Notiz 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1296,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 5. Entwurf anlegen\nERPNext erhält eine Eingangsrechnung als Entwurf. Gebucht wird nichts. Ein Mensch gibt frei.",
+        "height": 408,
+        "width": 440,
+        "color": 2
+      },
+      "id": "a278a363-3bfd-4a67-9b10-5b71156b404e",
+      "name": "Notiz 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 6. Abschluss\nDer Beleg wird in Paperless als verarbeitet markiert und kommt nicht noch einmal dran.",
+        "height": 408,
+        "width": 236,
+        "color": 4
+      },
+      "id": "bcd0c45f-1c23-4dc3-9f5b-349061b10f22",
+      "name": "Notiz 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2224,
+        -128
+      ]
+    }
+  ],
+  "connections": {
+    "Alle 5 Minuten": {
+      "main": [
+        [
+          {
+            "node": "Unverarbeitete Belege holen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unverarbeitete Belege holen": {
+      "main": [
+        [
+          {
+            "node": "Belege einzeln",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Belege einzeln": {
+      "main": [
+        [
+          {
+            "node": "Prompt bauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt bauen": {
+      "main": [
+        [
+          {
+            "node": "Ollama Extraktion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Extraktion": {
+      "main": [
+        [
+          {
+            "node": "Felder lesen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Felder lesen": {
+      "main": [
+        [
+          {
+            "node": "Lieferant in ERPNext suchen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lieferant in ERPNext suchen": {
+      "main": [
+        [
+          {
+            "node": "Lieferant vorhanden?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lieferant vorhanden?": {
+      "main": [
+        [
+          {
+            "node": "Rechnung schon da?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rechnung schon da?": {
+      "main": [
+        [
+          {
+            "node": "Schon vorhanden?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schon vorhanden?": {
+      "main": [
+        [
+          {
+            "node": "Beleg als verarbeitet markieren",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Eingangsrechnung bauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Eingangsrechnung bauen": {
+      "main": [
+        [
+          {
+            "node": "ERPNext Entwurf anlegen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ERPNext Entwurf anlegen": {
+      "main": [
+        [
+          {
+            "node": "Beleg als verarbeitet markieren",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": true
+}
